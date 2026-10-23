@@ -1,0 +1,131 @@
+# Copyright (c) 2026 Contributors to the Eclipse Foundation
+#
+# See the NOTICE file(s) distributed with this work for additional
+# information regarding copyright ownership.
+#
+# This program and the accompanying materials are made available under the
+# terms of the Apache Software License 2.0 which is available at
+# https://www.apache.org/licenses/LICENSE-2.0, or the MIT license
+# which is available at https://opensource.org/licenses/MIT.
+#
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The iceoryx2 C library is built once per platform and shared with the lint
+  # and test jobs, so that the Go versions do not each rebuild it.
+  build-native:
+    name: Build iceoryx2-ffi-c (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux-amd64, os: ubuntu-latest }
+          - { platform: linux-arm64, os: ubuntu-24.04-arm }
+          - { platform: macos-arm64, os: macos-latest }
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev clang
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: iceoryx2
+          key: ${{ matrix.platform }}
+
+      - name: Build iceoryx2-ffi-c
+        run: ./build.sh --lib-only
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-${{ matrix.platform }}
+          path: |
+            iceoryx2/target/release/libiceoryx2_ffi_c.a
+            iceoryx2/target/release/iceoryx2-ffi-c-cbindgen/include
+          if-no-files-found: error
+
+  lint:
+    name: Lint
+    needs: build-native
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: 1.26.x
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: native-linux-amd64
+          path: iceoryx2/target/release
+
+      # golangci-lint type-checks the cgo code and therefore needs the header.
+      - name: Point cgo at the iceoryx2 C library
+        run: |
+          source scripts/cgo-env.sh
+          {
+            echo "CGO_CFLAGS=$CGO_CFLAGS"
+            echo "CGO_LDFLAGS=$CGO_LDFLAGS"
+          } >> "$GITHUB_ENV"
+
+      # Keep the version in sync with the comment at the top of .golangci.yml.
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0
+
+  test:
+    name: Test (${{ matrix.platform }}, Go ${{ matrix.go }})
+    needs: build-native
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux-amd64, os: ubuntu-latest, go: "1.26.x" }
+          - { platform: linux-amd64, os: ubuntu-latest, go: "1.27.x" }
+          - { platform: linux-arm64, os: ubuntu-24.04-arm, go: "1.26.x" }
+          - { platform: linux-arm64, os: ubuntu-24.04-arm, go: "1.27.x" }
+          - { platform: macos-arm64, os: macos-latest, go: "1.26.x" }
+          - { platform: macos-arm64, os: macos-latest, go: "1.27.x" }
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ matrix.go }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: native-${{ matrix.platform }}
+          path: iceoryx2/target/release
+
+      - name: Test
+        run: |
+          source scripts/cgo-env.sh
+          go build ./...
+          go test -race -count=1 -v ./...

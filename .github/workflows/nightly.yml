@@ -1,0 +1,61 @@
+# Copyright (c) 2026 Contributors to the Eclipse Foundation
+#
+# See the NOTICE file(s) distributed with this work for additional
+# information regarding copyright ownership.
+#
+# This program and the accompanying materials are made available under the
+# terms of the Apache Software License 2.0 which is available at
+# https://www.apache.org/licenses/LICENSE-2.0, or the MIT license
+# which is available at https://opensource.org/licenses/MIT.
+#
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Builds and tests the binding against the head of the iceoryx2 main branch
+# instead of the release the submodule is pinned to. It warns early when an
+# upcoming iceoryx2 change breaks the binding. This workflow is allowed to
+# fail: it is not a required check and must never block a pull request.
+
+name: Nightly (iceoryx2 main)
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-against-iceoryx2-main:
+    name: Test against iceoryx2 main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Move the iceoryx2 submodule to main
+        run: |
+          git -C iceoryx2 fetch --depth 1 origin main
+          git -C iceoryx2 checkout --detach FETCH_HEAD
+          git -C iceoryx2 log -1 --format='iceoryx2 main at %H (%cs)'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev clang
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: 1.26.x
+
+      - name: Build iceoryx2-ffi-c
+        run: ./build.sh --lib-only
+
+      - name: Test
+        run: |
+          source scripts/cgo-env.sh
+          go build ./...
+          go test -race -count=1 -v ./...
