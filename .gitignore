@@ -1,0 +1,9 @@
+# Build results of the Go tool chain
+*.test
+*.out
+coverage.*
+
+# Editors
+.idea/
+.vscode/
+*.swp
