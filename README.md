@@ -5,7 +5,8 @@ Go Language Binding for Eclipse iceoryx2™
 The package `iox2` wraps the iceoryx2 C API with cgo. Progress is tracked in
 [eclipse-iceoryx/iceoryx2#2104](https://github.com/eclipse-iceoryx/iceoryx2/issues/2104).
 
-> **Status:** early development. Only creating a `Node` is available so far.
+> **Status:** early development. Creating a `Node` and publish-subscribe
+> communication of bytes or fixed-size values are available so far.
 
 ## Requirements
 
@@ -48,6 +49,12 @@ import (
 	iox2 "github.com/eclipse-iceoryx/iceoryx2-go"
 )
 
+// Reading has the memory layout of a C struct with the same fields.
+type Reading struct {
+	ID    uint32
+	Value float64
+}
+
 func main() {
 	node, err := iox2.NewNodeBuilder().Name("my-node").Create(iox2.ServiceTypeIpc)
 	if err != nil {
@@ -55,9 +62,38 @@ func main() {
 	}
 	defer node.Close()
 
-	log.Printf("created node %q", node.Name())
+	service, err := node.PublishSubscribe("Sensors/Reading").
+		Payload(iox2.FixedSizePayload[Reading]("Reading")).
+		OpenOrCreate()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer service.Close()
+
+	publisher, err := service.PublisherBuilder().Create()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer publisher.Close()
+	subscriber, err := service.SubscriberBuilder().Create()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer subscriber.Close()
+
+	if _, err := iox2.SendValue(publisher, Reading{ID: 1, Value: 2.5}); err != nil {
+		log.Fatal(err)
+	}
+	if reading, ok, err := iox2.ReceiveValue[Reading](subscriber); err != nil {
+		log.Fatal(err)
+	} else if ok {
+		log.Printf("received %+v", reading)
+	}
 }
 ```
+
+A service without `Payload` transmits byte slices of any length with
+`Publisher.Send` and `Subscriber.Receive`.
 
 ## Contributing
 
